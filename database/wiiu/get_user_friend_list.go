@@ -2,21 +2,19 @@ package database_wiiu
 
 import (
 	"database/sql"
-	"fmt"
-	"time"
 
 	"github.com/PretendoNetwork/friends/database"
 	"github.com/PretendoNetwork/friends/globals"
-	"github.com/PretendoNetwork/friends/utility"
-	"github.com/PretendoNetwork/nex-go"
-	friends_wiiu_types "github.com/PretendoNetwork/nex-protocols-go/friends-wiiu/types"
+	"github.com/PretendoNetwork/nex-go/v2/types"
+	friends_wiiu_types "github.com/PretendoNetwork/nex-protocols-go/v2/friends-wiiu/types"
 )
 
 // GetUserFriendList returns a user's friend list
-func GetUserFriendList(pid uint32) ([]*friends_wiiu_types.FriendInfo, error) {
-	friendList := make([]*friends_wiiu_types.FriendInfo, 0)
+func GetUserFriendList(pid uint32) (*types.List[*friends_wiiu_types.FriendInfo], error) {
+	friendList := types.NewList[*friends_wiiu_types.FriendInfo]()
+	friendList.Type = friends_wiiu_types.NewFriendInfo()
 
-	rows, err := database.Postgres.Query(`SELECT user2_pid, date FROM wiiu.friendships WHERE user1_pid=$1 AND active=true LIMIT 100`, pid)
+	rows, err := database.Manager.Query(`SELECT user2_pid, date FROM wiiu.friendships WHERE user1_pid=$1 AND active=true LIMIT 100`, pid)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return friendList, database.ErrEmptyList
@@ -24,75 +22,43 @@ func GetUserFriendList(pid uint32) ([]*friends_wiiu_types.FriendInfo, error) {
 			return friendList, err
 		}
 	}
+	defer rows.Close()
 
 	for rows.Next() {
 		var friendPID uint32
 		var date uint64
-		rows.Scan(&friendPID, &date)
+
+		err := rows.Scan(&friendPID, &date)
+		if err != nil {
+			return nil, err
+		}
 
 		friendInfo := friends_wiiu_types.NewFriendInfo()
-		connectedUser := globals.ConnectedUsers[friendPID]
-		var lastOnline *nex.DateTime
+		connectedUser, ok := globals.ConnectedUsers.Get(friendPID)
+		lastOnline := types.NewDateTime(0).Now()
 
-		if connectedUser != nil {
-			// Online
-			friendInfo.NNAInfo = connectedUser.NNAInfo
-			friendInfo.Presence = connectedUser.PresenceV2
+		friendInfo.NNAInfo, err = GetUserNetworkAccountInfo(friendPID)
+		if err != nil {
+			return nil, err
+		}
 
-			if friendInfo.NNAInfo == nil || friendInfo.NNAInfo.PrincipalBasicInfo == nil {
-				// TODO: Fix this
-				globals.Logger.Error(fmt.Sprintf("User %d has friend %d with bad presence data", pid, friendPID))
-				if friendInfo.NNAInfo == nil {
-					globals.Logger.Error(fmt.Sprintf("%d friendInfo.NNAInfo is nil", friendPID))
-				} else {
-					globals.Logger.Error(fmt.Sprintf("%d friendInfo.NNAInfo.PrincipalBasicInfo is nil", friendPID))
-				}
-
-				continue
-			}
-
-			lastOnline = nex.NewDateTime(0)
-			lastOnline.FromTimestamp(time.Now())
+		if ok && connectedUser != nil {
+			// * Online
+			friendInfo.Presence = connectedUser.PresenceV2.Copy().(*friends_wiiu_types.NintendoPresenceV2)
 		} else {
-			// Offline
-
-			userInfo, err := utility.GetUserInfoByPID(friendPID)
-			if err != nil {
-				return nil, err
-			}
-
-			friendInfo.NNAInfo = friends_wiiu_types.NewNNAInfo()
-
-			friendInfo.NNAInfo.PrincipalBasicInfo = userInfo
-			friendInfo.NNAInfo.Unknown1 = 0
-			friendInfo.NNAInfo.Unknown2 = 0
-
-			friendInfo.Presence = friends_wiiu_types.NewNintendoPresenceV2()
-			friendInfo.Presence.ChangedFlags = 0
-			friendInfo.Presence.Online = false
-			friendInfo.Presence.GameKey = friends_wiiu_types.NewGameKey()
-			friendInfo.Presence.GameKey.TitleID = 0
-			friendInfo.Presence.GameKey.TitleVersion = 0
-			friendInfo.Presence.Unknown1 = 0
-			friendInfo.Presence.Message = ""
-			friendInfo.Presence.Unknown2 = 0
-			friendInfo.Presence.Unknown3 = 0
-			friendInfo.Presence.GameServerID = 0
-			friendInfo.Presence.Unknown4 = 0
-			friendInfo.Presence.PID = 0
-			friendInfo.Presence.GatheringID = 0
-			friendInfo.Presence.ApplicationData = []byte{0x00}
-			friendInfo.Presence.Unknown5 = 0
-			friendInfo.Presence.Unknown6 = 0
-			friendInfo.Presence.Unknown7 = 0
-
+			// * Offline
 			var lastOnlineTime uint64
-			err = database.Postgres.QueryRow(`SELECT last_online FROM wiiu.user_data WHERE pid=$1`, friendPID).Scan(&lastOnlineTime)
+			row, err := database.Manager.QueryRow(`SELECT last_online FROM wiiu.user_data WHERE pid=$1`, friendPID)
 			if err != nil {
 				return nil, err
 			}
 
-			lastOnline = nex.NewDateTime(lastOnlineTime) // TODO: Change this
+			err = row.Scan(&lastOnlineTime)
+			if err != nil {
+				return nil, err
+			}
+
+			lastOnline = types.NewDateTime(lastOnlineTime) // TODO - Change this
 		}
 
 		status, err := GetUserComment(friendPID)
@@ -102,11 +68,11 @@ func GetUserFriendList(pid uint32) ([]*friends_wiiu_types.FriendInfo, error) {
 
 		friendInfo.Status = status
 
-		friendInfo.BecameFriend = nex.NewDateTime(date)
+		friendInfo.BecameFriend = types.NewDateTime(date)
 		friendInfo.LastOnline = lastOnline
-		friendInfo.Unknown = 0
+		friendInfo.Unknown = types.NewPrimitiveU64(0)
 
-		friendList = append(friendList, friendInfo)
+		friendList.Append(friendInfo)
 	}
 
 	return friendList, nil
