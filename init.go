@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -10,8 +11,9 @@ import (
 	"github.com/PretendoNetwork/friends/database"
 	"github.com/PretendoNetwork/friends/globals"
 	"github.com/PretendoNetwork/friends/types"
-	"github.com/PretendoNetwork/plogger-go"
 	pb "github.com/PretendoNetwork/grpc-go/account"
+	"github.com/PretendoNetwork/nex-go/v2"
+	"github.com/PretendoNetwork/plogger-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -21,8 +23,9 @@ import (
 
 func init() {
 	globals.Logger = plogger.NewLogger()
-	globals.ConnectedUsers = make(map[uint32]*types.ConnectedUser)
-	// Setup RSA private key for token parsing
+	globals.ConnectedUsers = nex.NewMutexMap[uint32, *types.ConnectedUser]()
+
+	// * Setup RSA private key for token parsing
 	var err error
 
 	err = godotenv.Load()
@@ -31,7 +34,9 @@ func init() {
 	}
 
 	postgresURI := os.Getenv("PN_FRIENDS_CONFIG_DATABASE_URI")
-	kerberosPassword := os.Getenv("PN_FRIENDS_CONFIG_KERBEROS_PASSWORD")
+	databaseMaxConnectionsStr := cmp.Or(os.Getenv("PN_FRIENDS_CONFIG_DATABASE_MAX_CONNECTIONS"), "100")
+	authenticationServerPassword := os.Getenv("PN_FRIENDS_CONFIG_AUTHENTICATION_PASSWORD")
+	secureServerPassword := os.Getenv("PN_FRIENDS_CONFIG_SECURE_PASSWORD")
 	aesKey := os.Getenv("PN_FRIENDS_CONFIG_AES_KEY")
 	grpcAPIKey := os.Getenv("PN_FRIENDS_CONFIG_GRPC_API_KEY")
 	grpcServerPort := os.Getenv("PN_FRIENDS_GRPC_SERVER_PORT")
@@ -47,10 +52,23 @@ func init() {
 		os.Exit(0)
 	}
 
-	if strings.TrimSpace(kerberosPassword) == "" {
-		globals.Logger.Warningf("PN_FRIENDS_CONFIG_KERBEROS_PASSWORD environment variable not set. Using default password: %q", globals.KerberosPassword)
+	databaseMaxConnections, err := strconv.Atoi(databaseMaxConnectionsStr)
+
+	if err != nil {
+		globals.Logger.Errorf("PN_FRIENDS_CONFIG_DATABASE_MAX_CONNECTIONS is not a valid number. Got %s", databaseMaxConnectionsStr)
+		os.Exit(0)
 	} else {
-		globals.KerberosPassword = kerberosPassword
+		globals.DatabaseMaxConnections = databaseMaxConnections
+	}
+
+	if strings.TrimSpace(authenticationServerPassword) == "" {
+		globals.Logger.Error("PN_FRIENDS_CONFIG_AUTHENTICATION_PASSWORD environment variable not set")
+		os.Exit(0)
+	}
+
+	if strings.TrimSpace(secureServerPassword) == "" {
+		globals.Logger.Error("PN_FRIENDS_CONFIG_SECURE_PASSWORD environment variable not set")
+		os.Exit(0)
 	}
 
 	if strings.TrimSpace(aesKey) == "" {
